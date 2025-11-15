@@ -1,0 +1,316 @@
+# Architecture Diagram - Text Representation
+# This can be converted to a visual diagram using tools like draw.io, Mermaid, or PlantUML
+
+## LangGraph State Flow Diagram
+
+```mermaid
+graph TD
+    Start([User Query]) --> A[Analyze Request Node]
+    
+    A -->|Classify Intent| B[Generate SQL Node]
+    
+    B -->|Create Query| C[Execute Query Node]
+    
+    C -->|Check Result| Router{Query Result?}
+    
+    Router -->|Success| D[Analyze Results Node]
+    Router -->|Error + Can Retry| B
+    Router -->|Error + Max Retries| E[Respond Node]
+    
+    D -->|Generate Insights| E
+    
+    E --> End([Response to User])
+    
+    style Start fill:#e1f5e1
+    style End fill:#e1f5e1
+    style Router fill:#fff4e1
+    style A fill:#e3f2fd
+    style B fill:#e3f2fd
+    style C fill:#e3f2fd
+    style D fill:#e3f2fd
+    style E fill:#e3f2fd
+```
+
+## System Component Diagram
+
+```mermaid
+graph TB
+    subgraph CLI["CLI Interface (main.py)"]
+        UI[User Input/Output]
+        Loop[Chat Loop]
+    end
+    
+    subgraph LangGraph["LangGraph Agent"]
+        State[Agent State]
+        Nodes[Graph Nodes]
+        Router[Conditional Router]
+    end
+    
+    subgraph External["External Services"]
+        Gemini[Google Gemini LLM]
+        BQ[Google BigQuery]
+    end
+    
+    subgraph Tools["Tools & Utilities"]
+        BQClient[BigQuery Client]
+        Validation[Query Validator]
+        Prompts[System Prompts]
+    end
+    
+    UI --> State
+    State --> Nodes
+    Nodes --> Router
+    Router --> Nodes
+    
+    Nodes --> Gemini
+    Nodes --> BQClient
+    BQClient --> BQ
+    Nodes --> Prompts
+    Nodes --> Validation
+    
+    State --> UI
+    
+    style CLI fill:#f9f9f9
+    style LangGraph fill:#e3f2fd
+    style External fill:#fff4e1
+    style Tools fill:#f3e5f5
+```
+
+## Data Flow Sequence
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant CLI as CLI Interface
+    participant A as Analyze Request
+    participant G as Generate SQL
+    participant E as Execute Query
+    participant AN as Analyze Results
+    participant R as Respond
+    participant LLM as Gemini LLM
+    participant BQ as BigQuery
+    
+    U->>CLI: Ask question
+    CLI->>A: Process query
+    A->>LLM: Classify intent
+    LLM-->>A: Analysis type
+    
+    A->>G: Intent + schemas
+    G->>LLM: Generate SQL
+    LLM-->>G: SQL query
+    G->>G: Validate query
+    
+    G->>E: Execute SQL
+    E->>BQ: Run query
+    BQ-->>E: Results (DataFrame)
+    
+    alt Query Success
+        E->>AN: Pass results
+        AN->>LLM: Analyze data
+        LLM-->>AN: Insights
+        AN->>R: Format response
+    else Query Failed (Retry)
+        E->>G: Error + retry
+        G->>LLM: Fix SQL
+        Note over G,E: Retry up to 2 times
+    else Max Retries
+        E->>R: Error message
+    end
+    
+    R->>CLI: Final response
+    CLI->>U: Display results
+```
+
+## Node Processing Detail
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        ANALYZE REQUEST NODE                     │
+│                                                                 │
+│  Input:  user_query (string)                                   │
+│                                                                 │
+│  Process:                                                       │
+│    1. Send query to Gemini with intent classification prompt   │
+│    2. Parse response for analysis type                         │
+│    3. Validate against allowed types                           │
+│                                                                 │
+│  Output: analysis_type (enum)                                  │
+│          - customer_segmentation                               │
+│          - product_performance                                 │
+│          - sales_trends                                        │
+│          - geographic_patterns                                 │
+│          - general_query                                       │
+└─────────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                       GENERATE SQL NODE                         │
+│                                                                 │
+│  Input:  user_query, analysis_type, schema_context             │
+│                                                                 │
+│  Process:                                                       │
+│    1. Retrieve table schemas (if not cached)                   │
+│    2. Format schema context for prompt                         │
+│    3. Send to Gemini with SQL generation prompt                │
+│    4. Clean response (remove markdown)                         │
+│    5. Validate query safety                                    │
+│    6. Check for dangerous operations                           │
+│                                                                 │
+│  Output: sql_query (string), error (if validation fails)       │
+└─────────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                      EXECUTE QUERY NODE                         │
+│                                                                 │
+│  Input:  sql_query (string)                                    │
+│                                                                 │
+│  Process:                                                       │
+│    1. Execute query via BigQuery client                        │
+│    2. Convert results to DataFrame                             │
+│    3. Capture any errors                                       │
+│                                                                 │
+│  Output: query_results (DataFrame) OR error (string)           │
+│          retry_count (incremented on error)                    │
+└─────────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                     CONDITIONAL ROUTER                          │
+│                                                                 │
+│  Decision Logic:                                               │
+│    ┌──────────────────────────────────────────────┐           │
+│    │ Has error AND retry_count < 2 AND retryable? │           │
+│    │         YES → generate_sql (retry)            │           │
+│    └──────────────────────────────────────────────┘           │
+│                            ↓ NO                                │
+│    ┌──────────────────────────────────────────────┐           │
+│    │     Has query_results (DataFrame)?            │           │
+│    │         YES → analyze_results                 │           │
+│    │         NO  → respond (with error)            │           │
+│    └──────────────────────────────────────────────┘           │
+└─────────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                     ANALYZE RESULTS NODE                        │
+│                                                                 │
+│  Input:  query_results, user_query, analysis_type, sql_query   │
+│                                                                 │
+│  Process:                                                       │
+│    1. Format DataFrame for prompt (limit rows)                 │
+│    2. Create insight generation prompt with context            │
+│    3. Send to Gemini for analysis                              │
+│    4. Parse and format insights                                │
+│    5. Fallback to basic stats if LLM fails                     │
+│                                                                 │
+│  Output: insights (string with formatted analysis)             │
+└─────────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                         RESPOND NODE                            │
+│                                                                 │
+│  Input:  insights, error, query_results                        │
+│                                                                 │
+│  Process:                                                       │
+│    1. Check for errors                                         │
+│    2. Format response based on success/failure                 │
+│    3. Add data summary metadata                                │
+│    4. Create AIMessage                                         │
+│                                                                 │
+│  Output: messages (List[AIMessage]) - final response           │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## State Transition Table
+
+| Current Node      | Next Node(s)          | Condition                          |
+|-------------------|-----------------------|------------------------------------|
+| analyze_request   | generate_sql          | Always                             |
+| generate_sql      | execute_query         | Always                             |
+| execute_query     | analyze_results       | Success (has results)              |
+| execute_query     | generate_sql          | Error + retry_count < 2 + retryable|
+| execute_query     | respond               | Error + (max retries OR non-retryable)|
+| analyze_results   | respond               | Always                             |
+| respond           | END                   | Always                             |
+
+## Error Handling Flow
+
+```
+Error Detected in execute_query
+    ↓
+Check Error Type
+    ↓
+    ├─ Authentication/Permission Error
+    │       → Non-retryable
+    │       → Route to: respond (immediate failure)
+    │
+    ├─ SQL Syntax/Logic Error
+    │       → Retryable
+    │       → Check retry_count
+    │           ├─ < 2: Route to generate_sql with error context
+    │           └─ ≥ 2: Route to respond (max retries exceeded)
+    │
+    ├─ Rate Limit Error (429)
+    │       → Apply exponential backoff
+    │       → Retry same query
+    │
+    └─ Network/Timeout Error
+            → Retryable
+            → Apply backoff and retry
+```
+
+## Technology Stack
+
+```
+┌─────────────────────────────────────────────────────┐
+│                   Application Layer                  │
+│  • main.py (CLI interface)                          │
+│  • Interactive chat loop                            │
+│  • User input/output handling                       │
+└─────────────────────────────────────────────────────┘
+                        ↓
+┌─────────────────────────────────────────────────────┐
+│                   Agent Layer                       │
+│  • LangGraph StateGraph                             │
+│  • Node implementations                             │
+│  • State management                                 │
+│  • Routing logic                                    │
+└─────────────────────────────────────────────────────┘
+                        ↓
+┌─────────────────────────────────────────────────────┐
+│                   Service Layer                     │
+│  • Gemini LLM client (langchain-google-genai)      │
+│  • BigQuery client (google-cloud-bigquery)         │
+│  • Tool wrappers                                    │
+│  • Prompt templates                                 │
+└─────────────────────────────────────────────────────┘
+                        ↓
+┌─────────────────────────────────────────────────────┐
+│                  External Services                  │
+│  • Google Gemini API (LLM)                         │
+│  • Google BigQuery (Data Warehouse)                │
+│  • Public Dataset: thelook_ecommerce               │
+└─────────────────────────────────────────────────────┘
+```
+
+## Key Design Patterns
+
+1. **State Machine Pattern**: LangGraph manages state transitions
+2. **Strategy Pattern**: Different prompts for different analysis types
+3. **Retry Pattern**: Automatic retry with exponential backoff
+4. **Facade Pattern**: Simple interface over complex LangGraph/LLM operations
+5. **Template Method**: Consistent node structure with specific implementations
+
+## Scalability Considerations
+
+### Current Implementation (Development/Demo)
+- Single-threaded execution
+- In-memory state
+- Synchronous API calls
+- Rate limited by Gemini free tier (15 RPM)
+
+### Production Scalability (Future)
+- Async/await for concurrent queries
+- Redis for state persistence
+- Query result caching
+- Load balancing for multiple users
+- Paid Gemini tier (higher rate limits)
+- Connection pooling for BigQuery
+
